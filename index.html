@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Cidades Próximas</title>
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <!-- DataTables CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css" />
+  <!-- DataTables Buttons CSS -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.3.6/css/buttons.bootstrap5.min.css" />
+  <!-- Select2 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+  <!-- Select2 Bootstrap 5 Theme CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/select2-bootstrap-5-theme@1.3.0/dist/select2-bootstrap-5-theme.min.css" rel="stylesheet" />
+</head>
+
+<body>
+  <div class="container">
+    <h1 class="mt-5">Encontrar Cidades Próximas</h1>
+    <form id="cityForm" class="row g-3">
+      <div class="col-md-4">
+        <label for="stateSelect" class="form-label">Estado</label>
+        <select class="form-select select2" id="stateSelect" required>
+          <option value="">Selecione um estado</option>
+          <!-- Opções serão preenchidas dinamicamente -->
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label for="citySelect" class="form-label">Cidade</label>
+        <select class="form-select select2" id="citySelect" disabled required>
+          <option value="">Selecione uma cidade</option>
+          <!-- Opções serão preenchidas dinamicamente -->
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label for="radiusInput" class="form-label">Raio em KM</label>
+        <input type="number" class="form-control" id="radiusInput" value="250" required max="250" />
+      </div>
+      <div class="col-12 mt-4">
+        <button type="submit" class="btn btn-primary" id="searchButton">Buscar</button>
+      </div>
+    </form>
+
+    <div class="mt-5" id="resultsContainer" style="display:none;">
+      <table id="resultsTable" class="table table-striped table-hover" style="width:100%">
+        <thead>
+          <tr>
+            <th>Nome</th>
+            <th>População</th>
+            <th>Distância</th>
+            <!-- <th>UF</th> -->
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Resultados serão preenchidos dinamicamente -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- jQuery -->
+  <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+  <!-- Bootstrap 5 JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- DataTables JS -->
+  <script src="https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js"></script>
+  <!-- DataTables Buttons JS -->
+  <script src="https://cdn.datatables.net/buttons/2.3.6/js/dataTables.buttons.min.js"></script>
+  <script src="https://cdn.datatables.net/buttons/2.3.6/js/buttons.bootstrap5.min.js"></script>
+  <!-- JSZip para exportar para Excel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.3/jszip.min.js"></script>
+  <!-- PDFMake para exportar para PDF -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.53/pdfmake.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.1.53/vfs_fonts.js"></script>
+  <!-- Botões HTML5 para exportação -->
+  <script src="https://cdn.datatables.net/buttons/2.3.6/js/buttons.html5.min.js"></script>
+  <!-- Botão de impressão -->
+  <script src="https://cdn.datatables.net/buttons/2.3.6/js/buttons.print.min.js"></script>
+  <!-- Select2 JS -->
+  <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+  <!-- Tradução do DataTables para Português -->
+  <script>
+    $.extend(true, $.fn.dataTable.defaults, {
+      language: {
+        url: 'https://cdn.datatables.net/plug-ins/1.13.4/i18n/pt-BR.json'
+      }
+    });
+  </script>
+  <!-- Tradução do Select2 para Português -->
+  <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/i18n/pt-BR.js"></script>
+
+  <script>
+    $(document).ready(function () {
+      $('.select2').select2({
+        theme: 'bootstrap-5',
+        language: "pt-BR"
+      });
+
+      var table = $('#resultsTable').DataTable({
+        dom: 'Bfrtip',
+        buttons: [
+          {
+            extend: 'excelHtml5',
+            text: 'Exportar para Excel',
+            className: 'btn btn-success',
+          },
+        ],
+        columns: [
+          { data: 'Name' },
+          { data: 'Population' },
+          { data: 'Distance' }
+          // { data: 'UF' }
+        ]
+      });
+
+      // Busca e popula os estados
+      $.ajax({
+        url: 'https://brasilapi.com.br/api/ibge/uf/v1',
+        method: 'GET',
+        success: function (data) {
+          data.sort(function (a, b) {
+            return a.nome.localeCompare(b.nome);
+          });
+          $.each(data, function (index, state) {
+            var option = new Option(state.nome, state.sigla, false, false);
+            $('#stateSelect').append(option);
+          });
+          $('#stateSelect').trigger('change');
+        }
+      });
+
+      // Quando um estado é selecionado, busca as cidades
+      $('#stateSelect').on('change', function () {
+        var stateCode = $(this).val();
+        if (stateCode) {
+          $('#citySelect').prop('disabled', false);
+          $('#citySelect').empty().append('<option value="">Selecione uma cidade</option>');
+          $.ajax({
+            url: 'https://brasilapi.com.br/api/ibge/municipios/v1/' + stateCode,
+            method: 'GET',
+            success: function (data) {
+              data.sort(function (a, b) {
+                return a.nome.localeCompare(b.nome);
+              });
+              $.each(data, function (index, city) {
+                var option = new Option(city.nome, city.nome, false, false);
+                $('#citySelect').append(option);
+              });
+              $('#citySelect').trigger('change');
+            }
+          });
+        } else {
+          $('#citySelect').prop('disabled', true).empty().append('<option value="">Selecione uma cidade</option>');
+          $('#citySelect').trigger('change');
+        }
+      });
+
+      // Manipula o envio do formulário
+      $('#cityForm').on('submit', function (event) {
+        event.preventDefault();
+
+        var city = $('#citySelect').val();
+        var uf = $('#stateSelect').val();
+        var radius = $('#radiusInput').val();
+
+        if (radius > 250) {
+          alert('O valor máximo para o raio é 250 km.');
+          return;
+        }
+
+        if (city && uf && radius) {
+          // Desabilita o botão e muda o texto
+          $('#searchButton').prop('disabled', true).text('Carregando...');
+
+          // Oculta a tabela até que os dados sejam carregados
+          $('#resultsContainer').hide();
+
+          $.ajax({
+            url: 'http://localhost:3000/getNearbyCities',
+            method: 'GET',
+            data: {
+              city: city,
+              uf: uf,
+              radius: radius
+            },
+            success: function (data) {
+              // Limpa os dados existentes na tabela
+              table.clear();
+              // Popula a tabela com novos dados
+              table.rows.add(data).draw();
+              // Exibe a tabela
+              $('#resultsContainer').show();
+            },
+            error: function (error) {
+              alert('Erro ao buscar cidades: ' + (error.responseJSON ? error.responseJSON.error : 'Erro desconhecido.'));
+            },
+            complete: function () {
+              // Reabilita o botão e restaura o texto
+              $('#searchButton').prop('disabled', false).text('Buscar');
+            }
+          });
+        }
+      });
+    });
+  </script>
+</body>
+
+</html>
