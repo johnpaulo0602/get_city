@@ -1,4 +1,4 @@
-require('dotenv').config(); // Carrega as variáveis de ambiente do arquivo .env
+require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -6,7 +6,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-const port = process.env.PORT || 3000; // Porta definida no .env ou padrão 3000
+const port = process.env.PORT || 3000;
 
 function getDistance(lat1, lon1, lat2, lon2) {
     const radiusEarth = 6371; // Raio da Terra em km
@@ -60,7 +60,7 @@ async function getCityCoordinates(cityName, UF, apiKey) {
     }
 }
 
-async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeoNames, responseStyle) {
+async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeoNames) {
     console.info('Buscando cidades próximas...');
     const degreeToKm = 111.32;
     const latAdjust = radius / degreeToKm;
@@ -71,13 +71,18 @@ async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeo
     const east = longitude + lngAdjust;
     const west = longitude - lngAdjust;
 
-    const geoNamesUrl = `http://api.geonames.org/citiesJSON?north=${north}&south=${south}&east=${east}&west=${west}&lang=PT&username=${usernameGeoNames}&maxRows=${maxRows}&style=${responseStyle}`;
+    // Usar o endpoint 'searchJSON' com featureClass=P e style=FULL para obter o 'fcode'
+    const geoNamesUrl = `http://api.geonames.org/searchJSON?north=${north}&south=${south}&east=${east}&west=${west}&lang=PT&username=${usernameGeoNames}&maxRows=${maxRows}&style=FULL&featureClass=P`;
 
     try {
         const response = await axios.get(geoNamesUrl);
         if (response.data.geonames) {
-            console.info(`Foram encontradas ${response.data.geonames.length} cidades próximas.`);
-            return response.data.geonames;
+            console.info(`Foram encontradas ${response.data.geonames.length} localidades próximas.`);
+
+            // Filtrar e remover entradas com 'fcode' igual a 'PPLL'
+            const filteredGeonames = response.data.geonames.filter(city => city.fcode !== 'PPLL');
+            console.info(`Após filtrar, ${filteredGeonames.length} cidades restantes.`);
+            return filteredGeonames;
         } else {
             console.error('Nenhuma cidade próxima encontrada.');
             return [];
@@ -121,13 +126,15 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
             const cityName = city.name;
             const normalizedCityName = normalizeString(cityName);
 
-            // Busca o município correspondente pelo nome
-            const municipality = municipalities.find(m => normalizeString(m.nome) === normalizedCityName);
+            // Busca todos os municípios correspondentes pelo nome
+            const matchingMunicipalities = municipalities.filter(m => normalizeString(m.nome) === normalizedCityName);
 
             let population = "Desconhecida";
             let ufSigla = "Desconhecida";
 
-            if (municipality) {
+            if (matchingMunicipalities && matchingMunicipalities.length > 0) {
+                // Seleciona o primeiro município encontrado
+                const municipality = matchingMunicipalities[0];
                 const municipioCodigo = municipality.id;
 
                 const urlPopulacao = `https://servicodados.ibge.gov.br/api/v3/agregados/6579/periodos/2021/variaveis/9324?localidades=N6[${municipioCodigo}]`;
@@ -140,6 +147,8 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
                 }
 
                 ufSigla = municipality.microrregiao.mesorregiao.UF.sigla;
+            } else {
+                console.warn(`Município não encontrado para a cidade ${cityName}`);
             }
 
             citiesList.push({
@@ -162,7 +171,6 @@ app.get('/getNearbyCities', async (req, res) => {
     const radius = parseFloat(req.query.radius) || 250;
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     const usernameGeoNames = process.env.GEONAMES_USERNAME;
-    const responseStyle = "short";
     const maxRows = 500;
 
     if (!cityName || !UF) {
@@ -184,7 +192,7 @@ app.get('/getNearbyCities', async (req, res) => {
 
     const municipalities = await getMunicipalities();
 
-    const nearbyCities = await getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames, responseStyle);
+    const nearbyCities = await getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames);
 
     const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, apiKey);
 
