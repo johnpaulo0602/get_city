@@ -1,12 +1,18 @@
+// server.js
+
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const NodeCache = require('node-cache'); // Biblioteca de cache em memória
 
 const app = express();
 app.use(cors());
 
 const port = process.env.PORT || 3000;
+
+// Configuração do cache
+const cache = new NodeCache({ stdTTL: 3600 }); // Tempo de vida padrão de 1 hora
 
 function getDistance(lat1, lon1, lat2, lon2) {
     const radiusEarth = 6371; // Raio da Terra em km
@@ -95,18 +101,57 @@ async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeo
 
 async function getMunicipalities() {
     console.info('Buscando lista de municípios do IBGE...');
-    const urlMunicipios = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome";
-    try {
-        const response = await axios.get(urlMunicipios);
-        console.info('Lista de municípios obtida com sucesso.');
-        return response.data;
-    } catch (error) {
-        console.error('Erro ao buscar municípios:', error);
-        return [];
+    const cacheKey = 'municipalities';
+    let municipalities = cache.get(cacheKey);
+
+    if (!municipalities) {
+        const urlMunicipios = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome";
+        try {
+            const response = await axios.get(urlMunicipios);
+            municipalities = response.data;
+            cache.set(cacheKey, municipalities);
+            console.info('Lista de municípios obtida com sucesso e armazenada no cache.');
+        } catch (error) {
+            console.error('Erro ao buscar municípios:', error);
+            municipalities = [];
+        }
+    } else {
+        console.info('Lista de municípios obtida do cache.');
     }
+
+    return municipalities;
 }
 
-async function processCities(latitude, longitude, radius, nearbyCities, municipalities, apiKey) {
+async function getPopulationData() {
+    console.info('Buscando dados de população do IBGE...');
+    const cacheKey = 'populationData';
+    let populationData = cache.get(cacheKey);
+
+    if (!populationData) {
+        const urlPopulacao = "https://servicodados.ibge.gov.br/api/v3/agregados/6579/periodos/2021/variaveis/9324?localidades=N6";
+        try {
+            const response = await axios.get(urlPopulacao);
+            const series = response.data[0].resultados[0].series;
+            populationData = {};
+            for (const item of series) {
+                const municipioId = item.localidade.id;
+                const population = item.serie['2021'];
+                populationData[municipioId] = population;
+            }
+            cache.set(cacheKey, populationData);
+            console.info('Dados de população obtidos com sucesso e armazenados no cache.');
+        } catch (error) {
+            console.error('Erro ao buscar dados de população:', error);
+            populationData = {};
+        }
+    } else {
+        console.info('Dados de população obtidos do cache.');
+    }
+
+    return populationData;
+}
+
+async function processCities(latitude, longitude, radius, nearbyCities, municipalities, populationData, apiKey) {
     console.info('Processando cidades...');
     const citiesList = [];
 
@@ -137,16 +182,12 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
                 const municipality = matchingMunicipalities[0];
                 const municipioCodigo = municipality.id;
 
-                const urlPopulacao = `https://servicodados.ibge.gov.br/api/v3/agregados/6579/periodos/2021/variaveis/9324?localidades=N6[${municipioCodigo}]`;
-
-                try {
-                    const popResponse = await axios.get(urlPopulacao);
-                    population = popResponse.data[0].resultados[0].series[0].serie['2021'];
-                } catch (error) {
-                    console.error(`Erro ao buscar população para a cidade ${cityName}:`, error);
-                }
-
                 ufSigla = municipality.microrregiao.mesorregiao.UF.sigla;
+
+                // Obtém a população do cache
+                if (populationData[municipioCodigo]) {
+                    population = populationData[municipioCodigo];
+                }
             } else {
                 console.warn(`Município não encontrado para a cidade ${cityName}`);
             }
@@ -190,11 +231,13 @@ app.get('/getNearbyCities', async (req, res) => {
         return res.status(500).json({ error: 'Erro ao buscar coordenadas da cidade' });
     }
 
-    const municipalities = await getMunicipalities();
+    const [municipalities, populationData, nearbyCities] = await Promise.all([
+        getMunicipalities(),
+        getPopulationData(),
+        getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames)
+    ]);
 
-    const nearbyCities = await getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames);
-
-    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, apiKey);
+    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, populationData, apiKey);
 
     console.info('Enviando resposta para o cliente.');
     res.json(citiesList);
