@@ -9,23 +9,40 @@ app.use(cors());
 const port = process.env.PORT || 3000; // Porta definida no .env ou padrão 3000
 
 function getDistance(lat1, lon1, lat2, lon2) {
-    const radiusEarth = 6371;
-    const dLat = (Math.PI * (lat2 - lat1)) / 180;
-    const dLon = (Math.PI * (lon2 - lon1)) / 180;
+    const radiusEarth = 6371; // Raio da Terra em km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(Math.PI * lat1 / 180) * Math.cos(Math.PI * lat2 / 180) *
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
         Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return Math.round(radiusEarth * c * 100) / 100;
+}
+
+async function getRoadDistance(lat1, lon1, lat2, lon2, apiKey) {
+    try {
+        const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${lat1},${lon1}&destination=${lat2},${lon2}&key=${apiKey}`;
+        const response = await axios.get(url);
+        if (response.data.status === "OK") {
+            return Math.round(response.data.routes[0].legs[0].distance.value / 1000 * 100) / 100; // em km
+        } else {
+            console.error(`Erro da API Directions: ${response.data.error_message}`);
+            return null;
+        }
+    } catch (error) {
+        console.error(`Erro ao chamar a API Directions: ${error.message}`);
+        return null;
+    }
 }
 
 function normalizeString(str) {
     return str.normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
-async function getCityCoordinates(cityName, countryCode, apiKey) {
-    console.info(`Buscando coordenadas para a cidade: ${cityName}`);
-    const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cityName)},${countryCode}&key=${apiKey}`;
+async function getCityCoordinates(cityName, UF, apiKey) {
+    console.info(`Buscando coordenadas para a cidade: ${cityName}, ${UF}`);
+    const formattedAddress = `${cityName}, ${UF}`;
+    const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(formattedAddress)}&key=${apiKey}`;
     try {
         const response = await axios.get(geocodeUrl);
         if (response.data.status === "OK") {
@@ -45,16 +62,16 @@ async function getCityCoordinates(cityName, countryCode, apiKey) {
 
 async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeoNames, responseStyle) {
     console.info('Buscando cidades próximas...');
-    const latRadians = latitude * Math.PI / 180;
-    const deltaLat = radius / 111;
-    const deltaLon = radius / (111 * Math.cos(latRadians));
+    const degreeToKm = 111.32;
+    const latAdjust = radius / degreeToKm;
+    const lngAdjust = radius / (degreeToKm * Math.cos(latitude * Math.PI / 180));
 
-    const north = latitude + deltaLat;
-    const south = latitude - deltaLat;
-    const east = longitude + deltaLon;
-    const west = longitude - deltaLon;
+    const north = latitude + latAdjust;
+    const south = latitude - latAdjust;
+    const east = longitude + lngAdjust;
+    const west = longitude - lngAdjust;
 
-    const geoNamesUrl = `http://api.geonames.org/citiesJSON?north=${north}&south=${south}&east=${east}&west=${west}&lang=en&username=${usernameGeoNames}&maxRows=${maxRows}&style=${responseStyle}`;
+    const geoNamesUrl = `http://api.geonames.org/citiesJSON?north=${north}&south=${south}&east=${east}&west=${west}&lang=PT&username=${usernameGeoNames}&maxRows=${maxRows}&style=${responseStyle}`;
 
     try {
         const response = await axios.get(geoNamesUrl);
@@ -84,31 +101,28 @@ async function getMunicipalities() {
     }
 }
 
-function createMunicipalityMap(municipalities) {
-    const map = new Map();
-    for (const m of municipalities) {
-        const name = normalizeString(m.nome);
-        map.set(name, m);
-    }
-    return map;
-}
-
-async function processCities(latitude, longitude, radius, nearbyCities, municipalities, UF) {
+async function processCities(latitude, longitude, radius, nearbyCities, municipalities, apiKey) {
     console.info('Processando cidades...');
     const citiesList = [];
-    const municipalityMap = createMunicipalityMap(municipalities);
 
     for (const city of nearbyCities) {
         const cityLat = parseFloat(city.lat);
         const cityLng = parseFloat(city.lng);
 
-        const distance = getDistance(latitude, longitude, cityLat, cityLng);
+        // Calcula a distância rodoviária
+        let roadDistance = await getRoadDistance(latitude, longitude, cityLat, cityLng, apiKey);
 
-        if (distance <= radius) {
+        // Se não conseguir, utiliza a distância em linha reta
+        if (roadDistance === null) {
+            roadDistance = getDistance(latitude, longitude, cityLat, cityLng);
+        }
+
+        if (roadDistance <= radius) {
             const cityName = city.name;
             const normalizedCityName = normalizeString(cityName);
 
-            const municipality = municipalityMap.get(normalizedCityName);
+            // Busca o município correspondente pelo nome
+            const municipality = municipalities.find(m => normalizeString(m.nome) === normalizedCityName);
 
             let population = "Desconhecida";
             let ufSigla = "Desconhecida";
@@ -128,14 +142,10 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
                 ufSigla = municipality.microrregiao.mesorregiao.UF.sigla;
             }
 
-            if (ufSigla === "Desconhecida" || !ufSigla) {
-                ufSigla = UF;
-            }
-
             citiesList.push({
                 Name: cityName,
                 Population: population,
-                Distance: `${distance} km`,
+                Distance: `${roadDistance} km`,
                 UF: ufSigla
             });
         }
@@ -150,7 +160,6 @@ app.get('/getNearbyCities', async (req, res) => {
     const cityName = req.query.city;
     const UF = req.query.uf;
     const radius = parseFloat(req.query.radius) || 250;
-    const countryCode = "BR";
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     const usernameGeoNames = process.env.GEONAMES_USERNAME;
     const responseStyle = "short";
@@ -161,7 +170,12 @@ app.get('/getNearbyCities', async (req, res) => {
         return res.status(400).json({ error: 'Por favor, forneça os parâmetros city e uf' });
     }
 
-    const coordinates = await getCityCoordinates(cityName, countryCode, apiKey);
+    if (radius > 250) {
+        console.warn('Raio solicitado é maior que 250 km.');
+        return res.status(400).json({ error: 'O raio máximo permitido é de 250 km' });
+    }
+
+    const coordinates = await getCityCoordinates(cityName, UF, apiKey);
 
     if (!coordinates) {
         console.error('Erro ao obter as coordenadas da cidade.');
@@ -172,7 +186,7 @@ app.get('/getNearbyCities', async (req, res) => {
 
     const nearbyCities = await getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames, responseStyle);
 
-    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, UF);
+    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, apiKey);
 
     console.info('Enviando resposta para o cliente.');
     res.json(citiesList);
