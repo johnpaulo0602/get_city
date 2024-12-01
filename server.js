@@ -5,7 +5,6 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const NodeCache = require('node-cache'); // Biblioteca de cache em memória
-
 const app = express();
 app.use(cors());
 
@@ -26,11 +25,21 @@ function getDistance(lat1, lon1, lat2, lon2) {
 }
 
 async function getRoadDistance(lat1, lon1, lat2, lon2, apiKey) {
+    const cacheKey = `roadDistance_${lat1}_${lon1}_${lat2}_${lon2}`;
+    let roadDistance = cache.get(cacheKey);
+
+    if (roadDistance !== undefined) {
+        console.info(`Distância rodoviária obtida do cache para coordenadas (${lat1}, ${lon1}) -> (${lat2}, ${lon2})`);
+        return roadDistance;
+    }
+
     try {
         const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${lat1},${lon1}&destination=${lat2},${lon2}&key=${apiKey}`;
         const response = await axios.get(url);
         if (response.data.status === "OK") {
-            return Math.round(response.data.routes[0].legs[0].distance.value / 1000 * 100) / 100; // em km
+            roadDistance = Math.round(response.data.routes[0].legs[0].distance.value / 1000 * 100) / 100; // em km
+            cache.set(cacheKey, roadDistance);
+            return roadDistance;
         } else {
             console.error(`Erro da API Directions: ${response.data.error_message}`);
             return null;
@@ -46,6 +55,14 @@ function normalizeString(str) {
 }
 
 async function getCityCoordinates(cityName, UF, apiKey) {
+    const cacheKey = `cityCoordinates_${cityName}_${UF}`;
+    let coordinates = cache.get(cacheKey);
+
+    if (coordinates) {
+        console.info(`Coordenadas obtidas do cache para a cidade: ${cityName}, ${UF}`);
+        return coordinates;
+    }
+
     console.info(`Buscando coordenadas para a cidade: ${cityName}, ${UF}`);
     const formattedAddress = `${cityName}, ${UF}`;
     const geocodeUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(formattedAddress)}&key=${apiKey}`;
@@ -55,7 +72,9 @@ async function getCityCoordinates(cityName, UF, apiKey) {
             const latitude = response.data.results[0].geometry.location.lat;
             const longitude = response.data.results[0].geometry.location.lng;
             console.info(`Coordenadas encontradas: Latitude ${latitude}, Longitude ${longitude}`);
-            return { latitude, longitude };
+            coordinates = { latitude, longitude };
+            cache.set(cacheKey, coordinates);
+            return coordinates;
         } else {
             console.error(`Erro ao buscar coordenadas: ${response.data.status}`);
             return null;
@@ -67,6 +86,14 @@ async function getCityCoordinates(cityName, UF, apiKey) {
 }
 
 async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeoNames) {
+    const cacheKey = `nearbyCities_${latitude}_${longitude}_${radius}`;
+    let nearbyCities = cache.get(cacheKey);
+
+    if (nearbyCities) {
+        console.info('Cidades próximas obtidas do cache.');
+        return nearbyCities;
+    }
+
     console.info('Buscando cidades próximas...');
     const degreeToKm = 111.32;
     const latAdjust = radius / degreeToKm;
@@ -88,6 +115,7 @@ async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeo
             // Filtrar e remover entradas com 'fcode' igual a 'PPLL'
             const filteredGeonames = response.data.geonames.filter(city => city.fcode !== 'PPLL');
             console.info(`Após filtrar, ${filteredGeonames.length} cidades restantes.`);
+            cache.set(cacheKey, filteredGeonames);
             return filteredGeonames;
         } else {
             console.error('Nenhuma cidade próxima encontrada.');
@@ -102,24 +130,34 @@ async function getNearbyCities(latitude, longitude, radius, maxRows, usernameGeo
 async function getMunicipalities() {
     console.info('Buscando lista de municípios do IBGE...');
     const cacheKey = 'municipalities';
-    let municipalities = cache.get(cacheKey);
+    let municipalityMap = cache.get(cacheKey);
 
-    if (!municipalities) {
+    if (!municipalityMap) {
         const urlMunicipios = "https://servicodados.ibge.gov.br/api/v1/localidades/municipios?orderBy=nome";
         try {
             const response = await axios.get(urlMunicipios);
-            municipalities = response.data;
-            cache.set(cacheKey, municipalities);
-            console.info('Lista de municípios obtida com sucesso e armazenada no cache.');
+            const municipalities = response.data;
+
+            // Indexar os municípios para busca rápida
+            municipalityMap = new Map();
+            for (const m of municipalities) {
+                const normalizedName = normalizeString(m.nome);
+                const ufSigla = m.microrregiao.mesorregiao.UF.sigla;
+                const key = `${normalizedName}|${ufSigla}`;
+                municipalityMap.set(key, m);
+            }
+
+            cache.set(cacheKey, municipalityMap);
+            console.info('Mapa de municípios criado e armazenado no cache.');
         } catch (error) {
             console.error('Erro ao buscar municípios:', error);
-            municipalities = [];
+            municipalityMap = new Map();
         }
     } else {
-        console.info('Lista de municípios obtida do cache.');
+        console.info('Mapa de municípios obtido do cache.');
     }
 
-    return municipalities;
+    return municipalityMap;
 }
 
 async function getPopulationData() {
@@ -151,9 +189,10 @@ async function getPopulationData() {
     return populationData;
 }
 
-async function processCities(latitude, longitude, radius, nearbyCities, municipalities, populationData, apiKey) {
+async function processCities(latitude, longitude, radius, nearbyCities, municipalityMap, populationData, apiKey) {
     console.info('Processando cidades...');
     const citiesList = [];
+    const startTime = Date.now(); // Início da medição de tempo
 
     for (const city of nearbyCities) {
         const cityLat = parseFloat(city.lat);
@@ -170,18 +209,17 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
         if (roadDistance <= radius) {
             const cityName = city.name;
             const normalizedCityName = normalizeString(cityName);
-
-            // Busca todos os municípios correspondentes pelo nome
-            const matchingMunicipalities = municipalities.filter(m => normalizeString(m.nome) === normalizedCityName);
+            const ufSiglaFromGeoNames = city.adminCodes1 && city.adminCodes1.ISO3166_2 ? city.adminCodes1.ISO3166_2.replace('BR.', '') : null;
 
             let population = "Desconhecida";
             let ufSigla = "Desconhecida";
 
-            if (matchingMunicipalities && matchingMunicipalities.length > 0) {
-                // Seleciona o primeiro município encontrado
-                const municipality = matchingMunicipalities[0];
-                const municipioCodigo = municipality.id;
+            // Construir a chave para busca no mapa de municípios
+            const key = `${normalizedCityName}|${ufSiglaFromGeoNames}`;
+            const municipality = municipalityMap.get(key);
 
+            if (municipality) {
+                const municipioCodigo = municipality.id;
                 ufSigla = municipality.microrregiao.mesorregiao.UF.sigla;
 
                 // Obtém a população do cache
@@ -189,7 +227,7 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
                     population = populationData[municipioCodigo];
                 }
             } else {
-                console.warn(`Município não encontrado para a cidade ${cityName}`);
+                console.warn(`Município não encontrado para a cidade ${cityName} (${ufSiglaFromGeoNames})`);
             }
 
             citiesList.push({
@@ -201,12 +239,14 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
         }
     }
 
-    console.info(`Processamento concluído. Total de cidades processadas: ${citiesList.length}`);
+    const endTime = Date.now(); // Fim da medição de tempo
+    console.info(`Processamento concluído em ${(endTime - startTime) / 1000} segundos. Total de cidades processadas: ${citiesList.length}`);
     return citiesList.sort((a, b) => a.Name.localeCompare(b.Name));
 }
 
 app.get('/getNearbyCities', async (req, res) => {
     console.info('Requisição recebida em /getNearbyCities');
+    const startTime = Date.now(); // Início da medição de tempo total
     const cityName = req.query.city;
     const UF = req.query.uf;
     const radius = parseFloat(req.query.radius) || 250;
@@ -231,15 +271,17 @@ app.get('/getNearbyCities', async (req, res) => {
         return res.status(500).json({ error: 'Erro ao buscar coordenadas da cidade' });
     }
 
-    const [municipalities, populationData, nearbyCities] = await Promise.all([
+    const [municipalityMap, populationData, nearbyCities] = await Promise.all([
         getMunicipalities(),
         getPopulationData(),
         getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames)
     ]);
 
-    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalities, populationData, apiKey);
+    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalityMap, populationData, apiKey);
 
     console.info('Enviando resposta para o cliente.');
+    const endTime = Date.now(); // Fim da medição de tempo total
+    console.info(`Tempo total de processamento: ${(endTime - startTime) / 1000} segundos.`);
     res.json(citiesList);
 });
 
