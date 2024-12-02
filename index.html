@@ -22,23 +22,33 @@
   <div class="container">
     <h1 class="mt-5">Encontrar Cidades Próximas</h1>
     <form id="cityForm" class="row g-3">
-      <div class="col-md-4">
+      <div class="col-md-3">
         <label for="stateSelect" class="form-label">Estado</label>
         <select class="form-select select2" id="stateSelect" required>
           <option value="">Selecione um estado</option>
           <!-- Opções serão preenchidas dinamicamente -->
         </select>
       </div>
-      <div class="col-md-4">
+      <div class="col-md-3">
         <label for="citySelect" class="form-label">Cidade</label>
         <select class="form-select select2" id="citySelect" disabled required>
           <option value="">Selecione uma cidade</option>
           <!-- Opções serão preenchidas dinamicamente -->
         </select>
       </div>
-      <div class="col-md-4">
+      <div class="col-md-3">
         <label for="radiusInput" class="form-label">Raio em KM</label>
         <input type="number" class="form-control" id="radiusInput" value="250" required max="250" />
+      </div>
+      <div class="col-md-3">
+        <label for="populationSelect" class="form-label">Mínimo de Habitantes</label>
+        <select class="form-select" id="populationSelect">
+          <option value="">Todas</option>
+          <option value="50000">Mínimo 50 mil habitantes</option>
+          <option value="100000">Mínimo 100 mil habitantes</option>
+          <option value="500000">Mínimo 500 mil habitantes</option>
+          <option value="1000000">Mínimo 1 milhão de habitantes</option>
+        </select>
       </div>
       <div class="col-12 mt-4">
         <button type="submit" class="btn btn-primary" id="searchButton">Buscar</button>
@@ -107,7 +117,7 @@
           {
             extend: 'excelHtml5',
             text: 'Excel <i class="fa fa-file-excel-o"></i>',
-            className: 'btn btn-primary',
+            className: 'btn btn-success',
           },
           {
             extend: 'pdf',
@@ -120,7 +130,8 @@
           { data: 'Population' },
           { data: 'Distance' }
           // { data: 'UF' }
-        ]
+        ],
+        pageLength: 20
       });
 
       // Busca e popula os estados
@@ -172,6 +183,7 @@
         var city = $('#citySelect').val();
         var uf = $('#stateSelect').val();
         var radius = $('#radiusInput').val();
+        var minPopulation = $('#populationSelect').val();
 
         if (radius > 250) {
           alert('O valor máximo para o raio é 250 km.');
@@ -186,12 +198,13 @@
           $('#resultsContainer').hide();
 
           $.ajax({
-            url: 'https://get-city.onrender.com/getNearbyCities',
+            url: 'http://localhost:3000/getNearbyCities',
             method: 'GET',
             data: {
               city: city,
               uf: uf,
-              radius: radius
+              radius: radius,
+              minPopulation: minPopulation
             },
             success: function (data) {
               // Limpa os dados existentes na tabela

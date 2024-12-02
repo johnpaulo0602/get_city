@@ -174,7 +174,7 @@ async function getPopulationData() {
             for (const item of series) {
                 const municipioId = item.localidade.id;
                 const population = item.serie['2021'];
-                populationData[municipioId] = population;
+                populationData[municipioId] = parseInt(population, 10);
             }
             cache.set(cacheKey, populationData);
             console.info('Dados de população obtidos com sucesso e armazenados no cache.');
@@ -189,7 +189,7 @@ async function getPopulationData() {
     return populationData;
 }
 
-async function processCities(latitude, longitude, radius, nearbyCities, municipalityMap, populationData, apiKey) {
+async function processCities(latitude, longitude, radius, nearbyCities, municipalityMap, populationData, apiKey, minPopulation) {
     console.info('Processando cidades...');
     const citiesList = [];
     const startTime = Date.now(); // Início da medição de tempo
@@ -223,19 +223,32 @@ async function processCities(latitude, longitude, radius, nearbyCities, municipa
                 ufSigla = municipality.microrregiao.mesorregiao.UF.sigla;
 
                 // Obtém a população do cache
-                if (populationData[municipioCodigo]) {
+                if (populationData[municipioCodigo] !== undefined) {
                     population = populationData[municipioCodigo];
                 }
             } else {
                 console.warn(`Município não encontrado para a cidade ${cityName} (${ufSiglaFromGeoNames})`);
             }
 
-            citiesList.push({
-                Name: cityName,
-                Population: population,
-                Distance: `${roadDistance} km`,
-                UF: ufSigla
-            });
+            // Filtrar com base na população, se necessário
+            if (minPopulation) {
+                if (typeof population === 'number' && population >= minPopulation) {
+                    citiesList.push({
+                        Name: cityName,
+                        Population: population,
+                        Distance: `${roadDistance} km`,
+                        UF: ufSigla
+                    });
+                }
+            } else {
+                // Se não houver filtro de população, adicionar todas as cidades
+                citiesList.push({
+                    Name: cityName,
+                    Population: population,
+                    Distance: `${roadDistance} km`,
+                    UF: ufSigla
+                });
+            }
         }
     }
 
@@ -250,6 +263,7 @@ app.get('/getNearbyCities', async (req, res) => {
     const cityName = req.query.city;
     const UF = req.query.uf;
     const radius = parseFloat(req.query.radius) || 250;
+    const minPopulation = req.query.minPopulation ? parseInt(req.query.minPopulation, 10) : null;
     const apiKey = process.env.GOOGLE_MAPS_API_KEY;
     const usernameGeoNames = process.env.GEONAMES_USERNAME;
     const maxRows = 500;
@@ -277,7 +291,7 @@ app.get('/getNearbyCities', async (req, res) => {
         getNearbyCities(coordinates.latitude, coordinates.longitude, radius, maxRows, usernameGeoNames)
     ]);
 
-    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalityMap, populationData, apiKey);
+    const citiesList = await processCities(coordinates.latitude, coordinates.longitude, radius, nearbyCities, municipalityMap, populationData, apiKey, minPopulation);
 
     console.info('Enviando resposta para o cliente.');
     const endTime = Date.now(); // Fim da medição de tempo total
